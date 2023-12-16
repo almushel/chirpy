@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"net/http"
 )
 
@@ -17,14 +18,22 @@ func middlewareCors(next http.Handler) http.Handler {
 	})
 }
 
+func healthzHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(200)
+	w.Write([]byte("Centent-type: text/plain; charset=utf8"))
+	w.Write([]byte("OK"))
+}
+
 func main() {
 	mux := http.NewServeMux()
+	mux.Handle("/app/", http.StripPrefix("/app", http.FileServer(http.Dir("."))))
+	mux.HandleFunc("/healthz", healthzHandler)
 	corsMux := middlewareCors(mux)
 
 	var server http.Server
 	server.Handler = corsMux
 	server.Addr = "localhost:8080"
-
-	server.ListenAndServe()
+	log.Println("Chirpy listening and serving at", server.Addr)
+	log.Fatalf(server.ListenAndServe().Error())
 	return
 }
