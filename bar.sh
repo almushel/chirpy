@@ -1,3 +1,3 @@
 #1 /bin/sh/
 
-go build -o bin/out && pushd serve && ../bin/out && popd
+go build -o bin/out && pushd serve && ../bin/out --debug
