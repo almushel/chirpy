@@ -5,11 +5,18 @@ import (
 	"errors"
 	"os"
 	"sync"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 type Chirp struct {
 	ID   int    `json:"id"`
 	Body string `json:"body"`
+}
+
+type dbUser struct {
+	User
+	PWH []byte `json:"pwh"`
 }
 
 type User struct {
@@ -24,7 +31,8 @@ type DB struct {
 
 type DBStructure struct {
 	Chirps map[int]Chirp
-	Users  map[int]User
+	Users  map[int]dbUser
+	Emails map[string]int
 }
 
 func NewDB(path string) (*DB, error) {
@@ -44,7 +52,6 @@ func (db *DB) initDB(path string) error {
 	_, err := os.Stat(db.path)
 	if errors.Is(err, os.ErrNotExist) {
 		dbs := new(DBStructure)
-		dbs.Chirps = make(map[int]Chirp)
 		buff, err := json.Marshal(dbs)
 		if err != nil {
 			return err
@@ -120,29 +127,68 @@ func (db *DB) GetChirps() ([]Chirp, error) {
 	return chirps, nil
 }
 
-func (db *DB) CreateUser(email string) (User, error) {
-	var result User
+func (db *DB) CreateUser(email, password string) (User, error) {
+	var result dbUser
 
 	dbs, err := db.loadDB()
 	if err != nil {
-		return result, err
+		return User{}, err
 	}
 
 	if len(dbs.Users) == 0 {
-		dbs.Users = make(map[int]User)
+		dbs.Users = make(map[int]dbUser)
 	}
-	result = User{
-		ID:    len(dbs.Users) + 1,
-		Email: email,
+	if len(dbs.Emails) == 0 {
+		dbs.Emails = make(map[string]int)
 	}
+	pwh, err := bcrypt.GenerateFromPassword([]byte(password), 0)
+	if err != nil {
+		return User{}, err
+	}
+	result = dbUser{
+		User: User{ID: len(dbs.Users) + 1, Email: email},
+		PWH:  pwh,
+	}
+	_, exists := dbs.Emails[email]
+	if exists {
+		return User{}, errors.New("User already exists for " + email)
+	}
+	dbs.Emails[email] = result.ID
 	dbs.Users[result.ID] = result
 
 	err = db.writeDB(dbs)
 	if err != nil {
-		return result, err
+		return result.User, err
 	}
 
-	return result, nil
+	return result.User, nil
+}
+
+func (db *DB) UpdateUser(id int, email, password string) (User, error) {
+	dbs, err := db.loadDB()
+	if err != nil {
+		return User{}, err
+	}
+	user, ok := dbs.Users[id]
+	if !ok {
+		return User{}, errors.New("User id does not exist")
+	}
+
+	user.PWH, err = bcrypt.GenerateFromPassword([]byte(password), 0)
+	if err != nil {
+		return User{}, nil
+	}
+
+	if email != user.Email {
+		delete(dbs.Emails, user.Email)
+		dbs.Emails[email] = user.ID
+		user.Email = email
+	}
+
+	dbs.Users[id] = user
+	db.writeDB(dbs)
+
+	return user.User, nil
 }
 
 func (db *DB) GetUsers() ([]User, error) {
@@ -153,8 +199,29 @@ func (db *DB) GetUsers() ([]User, error) {
 	}
 
 	for _, u := range dbs.Users {
-		result = append(result, u)
+		result = append(result, u.User)
 	}
 
+	return result, nil
+}
+
+func (db *DB) UserLogin(email, password string) (User, error) {
+	var result User
+	dbs, err := db.loadDB()
+	if err != nil {
+		return result, err
+	}
+	id, ok := dbs.Emails[email]
+	if !ok {
+		return result, errors.New("Email does not exist")
+	}
+	user := dbs.Users[id]
+
+	err = bcrypt.CompareHashAndPassword(user.PWH, []byte(password))
+	if err != nil {
+		return result, err
+	}
+
+	result = user.User
 	return result, nil
 }
