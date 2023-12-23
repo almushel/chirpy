@@ -2,6 +2,7 @@ package chirpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -184,6 +185,16 @@ func (cfg *ApiConfig) PutUsersHandler(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 401, "Invalid authorization token")
 		return
 	}
+	issuer, err := token.Claims.GetIssuer()
+	if err != nil {
+		log.Println("token.Claims.GetIssuer()", err)
+		respondWithError(w, 401, "Invalid authorization token")
+		return
+	}
+	if issuer != "chirpy-access" {
+		respondWithError(w, 401, "Invalid authorization token")
+		return
+	}
 	idStr, err := token.Claims.GetSubject()
 	if err != nil {
 		log.Println("token.Claims.GetSubject()", err)
@@ -210,12 +221,12 @@ func (cfg *ApiConfig) PostLoginHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Password string `json:"password"`
 		Email    string `json:"email"`
-		Expires  int    `json:"expires_in_seconds,omitempty"`
 	}
 
 	type response struct {
 		chirpydb.User
-		Token string `json:"token"`
+		Token        string `json:"token"`
+		RefreshToken string `json:"refresh_token"`
 	}
 
 	params := new(parameters)
@@ -234,28 +245,137 @@ func (cfg *ApiConfig) PostLoginHandler(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 401, "Invalid email or password")
 		return
 	}
-	var expiration time.Duration
-	if params.Expires > 0 && params.Expires < (24*60*60) {
-		expiration = time.Duration(params.Expires) * time.Second
-	} else {
-		expiration = 24 * time.Hour
-	}
 
 	token := jwt.NewWithClaims(
 		jwt.SigningMethodHS256,
 		jwt.RegisteredClaims{
-			Issuer:    "chirpy",
+			Issuer:    "chirpy-access",
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiration)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
 			Subject:   fmt.Sprint(rb.User.ID),
 		},
 	)
+	rToken := jwt.NewWithClaims(
+		jwt.SigningMethodHS256,
+		jwt.RegisteredClaims{
+			Issuer:    "chirpy-refresh",
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(60 * 24 * time.Hour)),
+			Subject:   fmt.Sprint(rb.User.ID),
+		},
+	)
+
 	rb.Token, err = token.SignedString([]byte(cfg.jwtSecret))
+	if err == nil {
+		rb.RefreshToken, err = rToken.SignedString([]byte(cfg.jwtSecret))
+	}
 	if err != nil {
-		log.Println("token.SignedString", err)
+		log.Println("token.SignedString()", err)
 		respondWithError(w, 500, "Token creation failed")
 		return
 	}
 
 	respondWithJSON(w, 200, rb)
+}
+
+func (cfg *ApiConfig) PostRefreshHandler(w http.ResponseWriter, r *http.Request) {
+	type response struct {
+		Token string `json:"token"`
+	}
+	var err error
+	defer func() {
+		if err != nil {
+			log.Println(err)
+			respondWithError(w, 401, "Invalid authorization token")
+			return
+		}
+	}()
+
+	ts := r.Header.Get("Authorization")[len("Bearer "):]
+	if len(ts) == 0 {
+		err = errors.New("No authorization header")
+		return
+	}
+	_, err = cfg.db.GetTokenRevocation(ts)
+	if err == nil {
+		err = errors.New("Authorization token has been revoked")
+		return
+	}
+
+	token, err := jwt.ParseWithClaims(ts, &jwt.RegisteredClaims{}, func(token *jwt.Token) (interface{}, error) { return []byte(cfg.jwtSecret), nil })
+	if err != nil {
+		return
+	}
+
+	issuer, err := token.Claims.GetIssuer()
+	if err != nil {
+		return
+	}
+	if issuer != "chirpy-refresh" {
+		err = errors.New("Invalid refresh token issuer")
+		return
+	}
+
+	idStr, err := token.Claims.GetSubject()
+	if err != nil {
+		return
+	}
+
+	var rb response
+	rToken := jwt.NewWithClaims(
+		jwt.SigningMethodHS256,
+		jwt.RegisteredClaims{
+			Issuer:    "chirpy-access",
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(60 * 24 * time.Hour)),
+			Subject:   idStr,
+		},
+	)
+
+	rb.Token, err = rToken.SignedString([]byte(cfg.jwtSecret))
+	if err != nil {
+		return
+	}
+
+	respondWithJSON(w, 200, rb)
+}
+
+func (cfg *ApiConfig) PostRevokeHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
+	defer func() {
+		if err != nil {
+			log.Println(err.Error())
+			respondWithError(w, 401, "Invalid authorization token")
+		} else {
+			respondWithJSON(w, 200, "")
+		}
+	}()
+
+	ts := r.Header.Get("Authorization")[len("Bearer "):]
+	if len(ts) == 0 {
+		err = errors.New("No authorization header")
+		return
+	}
+	_, err = cfg.db.GetTokenRevocation(ts)
+	if err == nil {
+		// NOTE: Should this be an error???
+		err = errors.New("Authorization token has already been revoked")
+		return
+	}
+
+	token, err := jwt.ParseWithClaims(ts, &jwt.RegisteredClaims{}, func(token *jwt.Token) (interface{}, error) { return []byte(cfg.jwtSecret), nil })
+	if err != nil {
+		return
+	}
+
+	issuer, err := token.Claims.GetIssuer()
+	if err != nil {
+		return
+	}
+	if issuer != "chirpy-refresh" {
+		err = errors.New("Invalid token issuer")
+		return
+	}
+
+	cfg.db.RevokeToken(ts)
 }

@@ -81,6 +81,8 @@ func main() {
 	apiRouter.Put("/users", cfg.PutUsersHandler)
 	apiRouter.Get("/chirps/{chirpID}", cfg.GetChirpsHandler)
 	apiRouter.Post("/login", cfg.PostLoginHandler)
+	apiRouter.Post("/refresh", cfg.PostRefreshHandler)
+	apiRouter.Post("/revoke", cfg.PostRevokeHandler)
 	r.Mount("/api", apiRouter)
 
 	adminRouter := chi.NewRouter()

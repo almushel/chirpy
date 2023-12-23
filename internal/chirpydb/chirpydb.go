@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -30,9 +31,10 @@ type DB struct {
 }
 
 type DBStructure struct {
-	Chirps map[int]Chirp
-	Users  map[int]dbUser
-	Emails map[string]int
+	Chirps      map[int]Chirp
+	Users       map[int]dbUser
+	Emails      map[string]int
+	Revocations map[string]time.Time
 }
 
 func NewDB(path string) (*DB, error) {
@@ -223,5 +225,45 @@ func (db *DB) UserLogin(email, password string) (User, error) {
 	}
 
 	result = user.User
+	return result, nil
+}
+
+func (db *DB) RevokeToken(token string) error {
+	dbs, err := db.loadDB()
+	if err != nil {
+		return err
+	}
+
+	if len(dbs.Revocations) == 0 {
+		dbs.Revocations = make(map[string]time.Time)
+	}
+
+	_, ok := dbs.Revocations[token]
+	if ok {
+		// Token has already been revoked
+		return nil
+	}
+	dbs.Revocations[token] = time.Now()
+
+	err = db.writeDB(dbs)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (db *DB) GetTokenRevocation(token string) (time.Time, error) {
+	var result time.Time
+	dbs, err := db.loadDB()
+	if err != nil {
+		return result, err
+	}
+
+	result, ok := dbs.Revocations[token]
+	if !ok {
+		return result, errors.New("Token has not been revoked")
+	}
+
 	return result, nil
 }
