@@ -75,14 +75,19 @@ func main() {
 	apiRouter := chi.NewRouter()
 	apiRouter.Get("/healthz", healthzHandler)
 	apiRouter.HandleFunc("/reset", cfg.ResetHandler)
+
 	apiRouter.Post("/chirps", cfg.PostChirpsHandler)
 	apiRouter.Get("/chirps", cfg.GetChirpsHandler)
+	apiRouter.Get("/chirps/{chirpID}", cfg.GetChirpsHandler)
+	apiRouter.Delete("/chirps/{chirpID}", cfg.DeleteChirpsHandler)
+
 	apiRouter.Post("/users", cfg.PostUsersHandler)
 	apiRouter.Put("/users", cfg.PutUsersHandler)
-	apiRouter.Get("/chirps/{chirpID}", cfg.GetChirpsHandler)
+
 	apiRouter.Post("/login", cfg.PostLoginHandler)
 	apiRouter.Post("/refresh", cfg.PostRefreshHandler)
 	apiRouter.Post("/revoke", cfg.PostRevokeHandler)
+
 	r.Mount("/api", apiRouter)
 
 	adminRouter := chi.NewRouter()

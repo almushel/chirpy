@@ -11,8 +11,9 @@ import (
 )
 
 type Chirp struct {
-	ID   int    `json:"id"`
-	Body string `json:"body"`
+	ID       int    `json:"id"`
+	AuthorID int    `json:"author_id"`
+	Body     string `json:"body"`
 }
 
 type dbUser struct {
@@ -89,7 +90,7 @@ func (db *DB) writeDB(dbs DBStructure) error {
 	return err
 }
 
-func (db *DB) CreateChirp(msg string) (Chirp, error) {
+func (db *DB) CreateChirp(msg string, authorID int) (Chirp, error) {
 	var result Chirp
 
 	dbs, err := db.loadDB()
@@ -101,8 +102,9 @@ func (db *DB) CreateChirp(msg string) (Chirp, error) {
 		dbs.Chirps = make(map[int]Chirp)
 	}
 	result = Chirp{
-		ID:   len(dbs.Chirps) + 1,
-		Body: msg,
+		ID:       len(dbs.Chirps) + 1,
+		AuthorID: authorID,
+		Body:     msg,
 	}
 	dbs.Chirps[result.ID] = result
 
@@ -112,6 +114,30 @@ func (db *DB) CreateChirp(msg string) (Chirp, error) {
 	}
 
 	return result, nil
+}
+
+func (db *DB) GetChirp(id int) (Chirp, error) {
+	dbs, err := db.loadDB()
+	if err != nil {
+		return Chirp{}, err
+	}
+	result, ok := dbs.Chirps[id]
+	if !ok {
+		return result, errors.New("Chirp does not exist")
+	}
+
+	return result, nil
+}
+
+func (db *DB) DeleteChirp(id int) (err error) {
+	dbs, err := db.loadDB()
+	if err != nil {
+		return
+	}
+
+	delete(dbs.Chirps, id)
+
+	return
 }
 
 func (db *DB) GetChirps() ([]Chirp, error) {
@@ -266,4 +292,17 @@ func (db *DB) GetTokenRevocation(token string) (time.Time, error) {
 	}
 
 	return result, nil
+}
+
+func (db *DB) IsTokenRevoked(token string) bool {
+	dbs, err := db.loadDB()
+	if err != nil {
+		return false
+	}
+	_, ok := dbs.Revocations[token]
+	if !ok {
+		return false
+	}
+
+	return true
 }

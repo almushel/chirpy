@@ -22,6 +22,11 @@ type ApiConfig struct {
 	jwtSecret       string
 }
 
+const (
+	AccessIssuer  = "chirpy-access"
+	RefreshIssuer = "chirpy-refresh"
+)
+
 func NewChirpAPI(dbPath, jwtSecret string) (*ApiConfig, error) {
 	var err error
 	result := new(ApiConfig)
@@ -52,6 +57,45 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 	w.Write(body)
 }
 
+func (cfg *ApiConfig) checkAuthorization(tokenString, issuer string) (id int, err error) {
+	if len(tokenString) == 0 {
+		err = errors.New("No authorization header")
+		return
+	}
+
+	token, err := jwt.ParseWithClaims(tokenString, &jwt.RegisteredClaims{}, func(token *jwt.Token) (interface{}, error) { return []byte(cfg.jwtSecret), nil })
+	if err != nil {
+		return
+	}
+
+	i, err := token.Claims.GetIssuer()
+	if i != issuer {
+		err = errors.New("Invalid authorization issuer")
+		return
+	}
+	if i == RefreshIssuer && cfg.db.IsTokenRevoked(tokenString) {
+		err = errors.New("Refresh token has been revoked")
+	}
+
+	expires, err := token.Claims.GetExpirationTime()
+	if err != nil {
+		return
+	}
+
+	if time.Now().After(expires.Time) {
+		err = errors.New("Authorization token is expired")
+		return
+	}
+
+	idStr, err := token.Claims.GetSubject()
+	if err != nil {
+		return
+	}
+	id, err = strconv.Atoi(idStr)
+
+	return
+}
+
 func (cfg *ApiConfig) MiddlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg.filerserverHits++
@@ -80,33 +124,52 @@ func (cfg *ApiConfig) ResetHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *ApiConfig) PostChirpsHandler(w http.ResponseWriter, r *http.Request) {
-	profaneWords := [3]string{
-		"kerfuffle", "sharbert", "fornax",
-	}
 	type parameters struct {
 		Body string `json:"body"`
 	}
 
+	var err error
+	var code int
+	defer func() {
+		if err != nil {
+			respondWithError(w, code, err.Error())
+		}
+	}()
+
+	ts := r.Header.Get("Authorization")
+	if len(ts) < len("Bearer ") {
+		err = errors.New("No authorization header")
+		code = 401
+		return
+	}
+	id, err := cfg.checkAuthorization(ts[len("Bearer "):], AccessIssuer)
+	if err != nil {
+		code = 401
+		return
+	}
+
 	params := new(parameters)
 	decoder := json.NewDecoder(r.Body)
-	err := decoder.Decode(params)
+	err = decoder.Decode(params)
 
 	if err != nil {
-		log.Printf("(decode(params)) %s", err)
-		respondWithError(w, 500, "Failed to decode request body")
+		code = 500
 		return
 	} else if len(params.Body) > 140 {
-		respondWithError(w, 400, "Chirp is too long")
+		code = 400
+		err = errors.New("Chirp is too long")
 		return
 	}
 
-	rb, err := cfg.db.CreateChirp(params.Body)
+	rb, err := cfg.db.CreateChirp(params.Body, id)
 	if err != nil {
-		log.Printf("(db.CreateChirp) %s", err)
-		respondWithError(w, 500, "DB failed to create chirp")
+		code = 500
 		return
 	}
 
+	profaneWords := [3]string{
+		"kerfuffle", "sharbert", "fornax",
+	}
 	for _, word := range profaneWords {
 		lower := strings.ToLower(rb.Body)
 		i := strings.Index(lower, word)
@@ -121,7 +184,6 @@ func (cfg *ApiConfig) PostChirpsHandler(w http.ResponseWriter, r *http.Request) 
 func (cfg *ApiConfig) GetChirpsHandler(w http.ResponseWriter, r *http.Request) {
 	rb, err := cfg.db.GetChirps()
 	if err != nil {
-		log.Printf("(db.loadDB) %s", err)
 		respondWithError(w, 500, "Failed to load chirp database")
 		return
 	}
@@ -140,6 +202,55 @@ func (cfg *ApiConfig) GetChirpsHandler(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, 200, rb)
 }
 
+func (cfg *ApiConfig) DeleteChirpsHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
+	var code int
+	defer func() {
+		if err != nil {
+			respondWithError(w, code, err.Error())
+		}
+	}()
+
+	ts := r.Header.Get("Authorization")
+	if len(ts) < len("Bearer ") {
+		err = errors.New("Invalid authorization header")
+		code = 401
+		return
+	}
+	id, err := cfg.checkAuthorization(ts[len("Bearer "):], AccessIssuer)
+	if err != nil {
+		code = 401
+		return
+	}
+
+	idStr := chi.URLParam(r, "chirpID")
+	if len(idStr) == 0 {
+		err = errors.New("No chirp ID param")
+		code = 404
+		return
+	}
+	chirpID, err := strconv.Atoi(idStr)
+	if err != nil {
+		code = 500
+		return
+	}
+
+	chirp, err := cfg.db.GetChirp(chirpID)
+	if err != nil {
+		code = 404
+		return
+	}
+
+	if chirp.AuthorID != id {
+		err = errors.New("Not authorized chirp author")
+		code = 403
+		return
+	}
+
+	cfg.db.DeleteChirp(chirpID)
+	respondWithJSON(w, 200, "OK")
+}
+
 func (cfg *ApiConfig) PostUsersHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Password string `json:"password"`
@@ -151,15 +262,13 @@ func (cfg *ApiConfig) PostUsersHandler(w http.ResponseWriter, r *http.Request) {
 	err := decoder.Decode(params)
 
 	if err != nil {
-		log.Printf("(decode(params)) %s", err)
 		respondWithError(w, 500, "Failed to decode request body")
 		return
 	}
 
 	rb, err := cfg.db.CreateUser(params.Email, params.Password)
 	if err != nil {
-		log.Printf("(db.CreateUser) %s", err)
-		respondWithError(w, 500, "Failed to create user")
+		respondWithError(w, 500, err.Error())
 		return
 	}
 
@@ -173,41 +282,15 @@ func (cfg *ApiConfig) PutUsersHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ts := r.Header.Get("Authorization")[len("Bearer "):]
-	if len(ts) == 0 {
-		log.Println("No Authorization header in request")
-		respondWithError(w, 401, "No authorization header")
-		return
-	}
-
-	token, err := jwt.ParseWithClaims(ts, &jwt.RegisteredClaims{}, func(token *jwt.Token) (interface{}, error) { return []byte(cfg.jwtSecret), nil })
+	id, err := cfg.checkAuthorization(ts, AccessIssuer)
 	if err != nil {
-		log.Println("jwt.ParseWithClaims()", err)
-		respondWithError(w, 401, "Invalid authorization token")
-		return
+		respondWithError(w, 401, err.Error())
 	}
-	issuer, err := token.Claims.GetIssuer()
-	if err != nil {
-		log.Println("token.Claims.GetIssuer()", err)
-		respondWithError(w, 401, "Invalid authorization token")
-		return
-	}
-	if issuer != "chirpy-access" {
-		respondWithError(w, 401, "Invalid authorization token")
-		return
-	}
-	idStr, err := token.Claims.GetSubject()
-	if err != nil {
-		log.Println("token.Claims.GetSubject()", err)
-		respondWithError(w, 401, "Invalid authorization token")
-		return
-	}
-	id, err := strconv.Atoi(idStr)
 
 	params := new(parameters)
 	decoder := json.NewDecoder(r.Body)
 	err = decoder.Decode(params)
 	if err != nil {
-		log.Printf("(decode(params)) %s", err)
 		respondWithError(w, 500, "Failed to decode request body")
 		return
 	}
@@ -232,16 +315,15 @@ func (cfg *ApiConfig) PostLoginHandler(w http.ResponseWriter, r *http.Request) {
 	params := new(parameters)
 	decoder := json.NewDecoder(r.Body)
 	err := decoder.Decode(params)
-
 	if err != nil {
 		log.Printf("(decode(params)) %s", err)
 		respondWithError(w, 500, "Failed to decode request body")
 		return
 	}
+
 	var rb response
 	rb.User, err = cfg.db.UserLogin(params.Email, params.Password)
 	if err != nil {
-		log.Printf("db.UserLogin() %s\n", err)
 		respondWithError(w, 401, "Invalid email or password")
 		return
 	}
@@ -249,7 +331,7 @@ func (cfg *ApiConfig) PostLoginHandler(w http.ResponseWriter, r *http.Request) {
 	token := jwt.NewWithClaims(
 		jwt.SigningMethodHS256,
 		jwt.RegisteredClaims{
-			Issuer:    "chirpy-access",
+			Issuer:    AccessIssuer,
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
 			Subject:   fmt.Sprint(rb.User.ID),
@@ -258,7 +340,7 @@ func (cfg *ApiConfig) PostLoginHandler(w http.ResponseWriter, r *http.Request) {
 	rToken := jwt.NewWithClaims(
 		jwt.SigningMethodHS256,
 		jwt.RegisteredClaims{
-			Issuer:    "chirpy-refresh",
+			Issuer:    RefreshIssuer,
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(60 * 24 * time.Hour)),
 			Subject:   fmt.Sprint(rb.User.ID),
@@ -285,38 +367,17 @@ func (cfg *ApiConfig) PostRefreshHandler(w http.ResponseWriter, r *http.Request)
 	var err error
 	defer func() {
 		if err != nil {
-			log.Println(err)
 			respondWithError(w, 401, "Invalid authorization token")
 			return
 		}
 	}()
 
-	ts := r.Header.Get("Authorization")[len("Bearer "):]
-	if len(ts) == 0 {
-		err = errors.New("No authorization header")
+	ts := r.Header.Get("Authorization")
+	if len(ts) < len("Bearer ") {
+		err = errors.New("Invalid authorization header")
 		return
 	}
-	_, err = cfg.db.GetTokenRevocation(ts)
-	if err == nil {
-		err = errors.New("Authorization token has been revoked")
-		return
-	}
-
-	token, err := jwt.ParseWithClaims(ts, &jwt.RegisteredClaims{}, func(token *jwt.Token) (interface{}, error) { return []byte(cfg.jwtSecret), nil })
-	if err != nil {
-		return
-	}
-
-	issuer, err := token.Claims.GetIssuer()
-	if err != nil {
-		return
-	}
-	if issuer != "chirpy-refresh" {
-		err = errors.New("Invalid refresh token issuer")
-		return
-	}
-
-	idStr, err := token.Claims.GetSubject()
+	id, err := cfg.checkAuthorization(ts[len("Bearer "):], AccessIssuer)
 	if err != nil {
 		return
 	}
@@ -325,15 +386,16 @@ func (cfg *ApiConfig) PostRefreshHandler(w http.ResponseWriter, r *http.Request)
 	rToken := jwt.NewWithClaims(
 		jwt.SigningMethodHS256,
 		jwt.RegisteredClaims{
-			Issuer:    "chirpy-access",
+			Issuer:    AccessIssuer,
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(60 * 24 * time.Hour)),
-			Subject:   idStr,
+			Subject:   fmt.Sprintf("%d", id),
 		},
 	)
 
 	rb.Token, err = rToken.SignedString([]byte(cfg.jwtSecret))
 	if err != nil {
+		log.Println("(PostRefreshHandler) Creation of signed access token string failed")
 		return
 	}
 
@@ -344,36 +406,19 @@ func (cfg *ApiConfig) PostRevokeHandler(w http.ResponseWriter, r *http.Request) 
 	var err error
 	defer func() {
 		if err != nil {
-			log.Println(err.Error())
 			respondWithError(w, 401, "Invalid authorization token")
 		} else {
-			respondWithJSON(w, 200, "")
+			respondWithJSON(w, 200, "OK")
 		}
 	}()
 
-	ts := r.Header.Get("Authorization")[len("Bearer "):]
-	if len(ts) == 0 {
-		err = errors.New("No authorization header")
+	ts := r.Header.Get("Authorization")
+	if len(ts) < len("Bearer ") {
+		err = errors.New("Invalid authorization header")
 		return
 	}
-	_, err = cfg.db.GetTokenRevocation(ts)
-	if err == nil {
-		// NOTE: Should this be an error???
-		err = errors.New("Authorization token has already been revoked")
-		return
-	}
-
-	token, err := jwt.ParseWithClaims(ts, &jwt.RegisteredClaims{}, func(token *jwt.Token) (interface{}, error) { return []byte(cfg.jwtSecret), nil })
+	_, err = cfg.checkAuthorization(ts[len("Bearer "):], RefreshIssuer)
 	if err != nil {
-		return
-	}
-
-	issuer, err := token.Claims.GetIssuer()
-	if err != nil {
-		return
-	}
-	if issuer != "chirpy-refresh" {
-		err = errors.New("Invalid token issuer")
 		return
 	}
 
