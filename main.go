@@ -62,7 +62,13 @@ func main() {
 		log.Println("Failed to load jwt secret from .env")
 		return
 	}
-	cfg, err := NewChirpAPI("database.json", jwt)
+	pk, found := os.LookupEnv("POLKA_KEY")
+	if !found {
+		log.Println("Failed to load Polka API key")
+		return
+	}
+
+	cfg, err := NewChirpAPI("database.json", jwt, pk)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -87,6 +93,8 @@ func main() {
 	apiRouter.Post("/login", cfg.PostLoginHandler)
 	apiRouter.Post("/refresh", cfg.PostRefreshHandler)
 	apiRouter.Post("/revoke", cfg.PostRevokeHandler)
+
+	apiRouter.Post("/polka/webhooks", cfg.PolkaWebhookHandler)
 
 	r.Mount("/api", apiRouter)
 

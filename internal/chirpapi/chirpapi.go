@@ -20,6 +20,7 @@ type ApiConfig struct {
 	filerserverHits int
 	db              *chirpydb.DB
 	jwtSecret       string
+	polkaKey        string
 }
 
 const (
@@ -27,7 +28,7 @@ const (
 	RefreshIssuer = "chirpy-refresh"
 )
 
-func NewChirpAPI(dbPath, jwtSecret string) (*ApiConfig, error) {
+func NewChirpAPI(dbPath, jwtSecret, polkaKey string) (*ApiConfig, error) {
 	var err error
 	result := new(ApiConfig)
 	result.db, err = chirpydb.NewDB(dbPath)
@@ -35,6 +36,7 @@ func NewChirpAPI(dbPath, jwtSecret string) (*ApiConfig, error) {
 		return nil, err
 	}
 	result.jwtSecret = jwtSecret
+	result.polkaKey = polkaKey
 
 	return result, nil
 }
@@ -153,7 +155,7 @@ func (cfg *ApiConfig) PostChirpsHandler(w http.ResponseWriter, r *http.Request) 
 	err = decoder.Decode(params)
 
 	if err != nil {
-		code = 500
+		code = 400
 		return
 	} else if len(params.Body) > 140 {
 		code = 400
@@ -262,7 +264,7 @@ func (cfg *ApiConfig) PostUsersHandler(w http.ResponseWriter, r *http.Request) {
 	err := decoder.Decode(params)
 
 	if err != nil {
-		respondWithError(w, 500, "Failed to decode request body")
+		respondWithError(w, 400, "Failed to decode request body")
 		return
 	}
 
@@ -291,11 +293,12 @@ func (cfg *ApiConfig) PutUsersHandler(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	err = decoder.Decode(params)
 	if err != nil {
-		respondWithError(w, 500, "Failed to decode request body")
+		respondWithError(w, 400, "Failed to decode request body")
 		return
 	}
 	var rb chirpydb.User
-	rb, err = cfg.db.UpdateUser(id, params.Email, params.Password)
+
+	rb, err = cfg.db.UpdateUser(id, map[string]string{"email": params.Email, "password": params.Password})
 
 	respondWithJSON(w, 200, rb)
 }
@@ -317,7 +320,7 @@ func (cfg *ApiConfig) PostLoginHandler(w http.ResponseWriter, r *http.Request) {
 	err := decoder.Decode(params)
 	if err != nil {
 		log.Printf("(decode(params)) %s", err)
-		respondWithError(w, 500, "Failed to decode request body")
+		respondWithError(w, 400, "Failed to decode request body")
 		return
 	}
 
@@ -423,4 +426,35 @@ func (cfg *ApiConfig) PostRevokeHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	cfg.db.RevokeToken(ts)
+}
+
+func (cfg *ApiConfig) PolkaWebhookHandler(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Event string         `json:"event"`
+		Data  map[string]int `json:"data"`
+	}
+
+	auth := r.Header.Get("Authorization")
+	if auth[min(len("Apikey "), len(auth)):] != cfg.polkaKey {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	params := new(parameters)
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(params)
+	if err != nil {
+		respondWithError(w, 400, "Invalid request body")
+		return
+	}
+
+	if params.Event == "user.upgraded" {
+		userID, ok := params.Data["user_id"]
+		if !ok {
+			respondWithError(w, 404, "User ID not found")
+			return
+		}
+		cfg.db.UpdateUser(userID, map[string]string{"is_chirpy_red": "true"})
+	}
+	respondWithJSON(w, 200, "")
 }

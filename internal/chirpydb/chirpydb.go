@@ -16,14 +16,15 @@ type Chirp struct {
 	Body     string `json:"body"`
 }
 
+type User struct {
+	ID          int    `json:"id"`
+	Email       string `json:"email"`
+	IsChirpyRed bool   `json:"is_chirpy_red"`
+}
+
 type dbUser struct {
 	User
 	PWH []byte `json:"pwh"`
-}
-
-type User struct {
-	ID    int    `json:"id"`
-	Email string `json:"email"`
 }
 
 type DB struct {
@@ -192,7 +193,7 @@ func (db *DB) CreateUser(email, password string) (User, error) {
 	return result.User, nil
 }
 
-func (db *DB) UpdateUser(id int, email, password string) (User, error) {
+func (db *DB) UpdateUser(id int, properties map[string]string) (User, error) {
 	dbs, err := db.loadDB()
 	if err != nil {
 		return User{}, err
@@ -202,15 +203,22 @@ func (db *DB) UpdateUser(id int, email, password string) (User, error) {
 		return User{}, errors.New("User id does not exist")
 	}
 
-	user.PWH, err = bcrypt.GenerateFromPassword([]byte(password), 0)
-	if err != nil {
-		return User{}, nil
-	}
-
-	if email != user.Email {
-		delete(dbs.Emails, user.Email)
-		dbs.Emails[email] = user.ID
-		user.Email = email
+	for key, prop := range properties {
+		switch key {
+		case "password":
+			user.PWH, err = bcrypt.GenerateFromPassword([]byte(prop), 0)
+			if err != nil {
+				return User{}, nil
+			}
+		case "email":
+			if prop != user.Email {
+				delete(dbs.Emails, user.Email)
+				dbs.Emails[prop] = user.ID
+				user.Email = prop
+			}
+		case "is_chirpy_red":
+			user.IsChirpyRed = (prop == "true")
+		}
 	}
 
 	dbs.Users[id] = user
