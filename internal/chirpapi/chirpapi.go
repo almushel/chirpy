@@ -184,7 +184,7 @@ func (cfg *ApiConfig) PostChirpsHandler(w http.ResponseWriter, r *http.Request) 
 }
 
 func (cfg *ApiConfig) GetChirpsHandler(w http.ResponseWriter, r *http.Request) {
-	rb, err := cfg.db.GetChirps()
+	chirps, err := cfg.db.GetChirps()
 	if err != nil {
 		respondWithError(w, 500, "Failed to load chirp database")
 		return
@@ -193,12 +193,36 @@ func (cfg *ApiConfig) GetChirpsHandler(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "chirpID")
 	if len(idStr) > 0 {
 		id, _ := strconv.Atoi(idStr)
-		if id > len(rb) {
+		if id > len(chirps) {
 			respondWithError(w, 404, fmt.Sprintf("Chirp %d not found", id))
 			return
 		}
-		respondWithJSON(w, 200, rb[id-1])
+		respondWithJSON(w, 200, chirps[id-1])
 		return
+	}
+
+	sort := r.URL.Query().Get("sort")
+	if sort == "desc" {
+		for i, e := 0, len(chirps)-1; i < e; i, e = i+1, e-1 {
+			chirps[i], chirps[e] = chirps[e], chirps[i]
+		}
+	}
+
+	var rb []chirpydb.Chirp
+	authorIDStr := r.URL.Query().Get("author_id")
+	if len(authorIDStr) > 0 {
+		authorID, err := strconv.Atoi(authorIDStr)
+		if err != nil {
+			respondWithError(w, 400, "Invalid author_id")
+			return
+		}
+		for _, chirp := range chirps {
+			if chirp.AuthorID == authorID {
+				rb = append(rb, chirp)
+			}
+		}
+	} else {
+		rb = chirps
 	}
 
 	respondWithJSON(w, 200, rb)

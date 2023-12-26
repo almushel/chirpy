@@ -42,7 +42,7 @@ func parseEnv() {
 	for _, line := range lines {
 		ev, param, found := strings.Cut(line, "=")
 		if found != true {
-			log.Println("Failed to parse .env line: ", line)
+			log.Println("Failed to parse .env line:", line)
 			continue
 		}
 		os.Setenv(strings.TrimSpace(ev), strings.TrimSpace(param))
