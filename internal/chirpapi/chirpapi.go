@@ -273,7 +273,12 @@ func (cfg *ApiConfig) DeleteChirpsHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	cfg.db.DeleteChirp(chirpID)
+	err = cfg.db.DeleteChirp(chirpID)
+	if err != nil {
+		code = 400
+		return
+	}
+
 	respondWithJSON(w, 200, "OK")
 }
 

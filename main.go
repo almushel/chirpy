@@ -49,29 +49,8 @@ func parseEnv() {
 	}
 }
 
-func main() {
-	dbg := flag.Bool("debug", false, "Enable debug mode")
-	flag.Parse()
-	if *dbg {
-		os.Remove("database.json")
-	}
-
-	parseEnv()
-	jwt, found := os.LookupEnv("JWT_SECRET")
-	if !found {
-		log.Println("Failed to load jwt secret from .env")
-		return
-	}
-	pk, found := os.LookupEnv("POLKA_KEY")
-	if !found {
-		log.Println("Failed to load Polka API key")
-		return
-	}
-
-	cfg, err := NewChirpAPI("database.json", jwt, pk)
-	if err != nil {
-		log.Fatalln(err)
-	}
+func InitServer(cfg *ApiConfig, addr string) (*http.Server, error) {
+	var server http.Server
 
 	r := chi.NewRouter()
 	fs := cfg.MiddlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir("."))))
@@ -102,9 +81,36 @@ func main() {
 	adminRouter.Get("/metrics", cfg.MetricsHandler)
 	r.Mount("/admin", adminRouter)
 
-	var server http.Server
 	server.Handler = middlewareCors(r)
-	server.Addr = "localhost:8080"
+	server.Addr = addr
+
+	return &server, nil
+}
+
+func main() {
+	dbg := flag.Bool("debug", false, "Enable debug mode")
+	flag.Parse()
+	if *dbg {
+		os.Remove("database.json")
+	}
+
+	parseEnv()
+	jwt, found := os.LookupEnv("JWT_SECRET")
+	if !found {
+		log.Println("Failed to load jwt secret from .env")
+		return
+	}
+	pk, found := os.LookupEnv("POLKA_KEY")
+	if !found {
+		log.Println("Failed to load Polka API key")
+		return
+	}
+
+	cfg, err := NewChirpAPI("database.json", jwt, pk)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	server, err := InitServer(cfg, "localhost:8080")
 	log.Println("Chirpy listening and serving at", server.Addr)
 	log.Fatalf(server.ListenAndServe().Error())
 	return

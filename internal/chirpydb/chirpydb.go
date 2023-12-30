@@ -30,6 +30,8 @@ type dbUser struct {
 type DB struct {
 	path string
 	mux  *sync.RWMutex
+
+	chirpID, userID int
 }
 
 type DBStructure struct {
@@ -42,6 +44,8 @@ type DBStructure struct {
 func NewDB(path string) (*DB, error) {
 	result := new(DB)
 	result.mux = new(sync.RWMutex)
+	result.chirpID = 1
+	result.userID = 1
 	err := result.initDB(path)
 
 	return result, err
@@ -103,11 +107,12 @@ func (db *DB) CreateChirp(msg string, authorID int) (Chirp, error) {
 		dbs.Chirps = make(map[int]Chirp)
 	}
 	result = Chirp{
-		ID:       len(dbs.Chirps) + 1,
+		ID:       db.chirpID,
 		AuthorID: authorID,
 		Body:     msg,
 	}
 	dbs.Chirps[result.ID] = result
+	db.chirpID++
 
 	err = db.writeDB(dbs)
 	if err != nil {
@@ -122,9 +127,10 @@ func (db *DB) GetChirp(id int) (Chirp, error) {
 	if err != nil {
 		return Chirp{}, err
 	}
+
 	result, ok := dbs.Chirps[id]
 	if !ok {
-		return result, errors.New("Chirp does not exist")
+		return result, errors.New("Invalid chirp ID")
 	}
 
 	return result, nil
@@ -137,8 +143,9 @@ func (db *DB) DeleteChirp(id int) (err error) {
 	}
 
 	delete(dbs.Chirps, id)
+	err = db.writeDB(dbs)
 
-	return
+	return err
 }
 
 func (db *DB) GetChirps() ([]Chirp, error) {
@@ -148,9 +155,11 @@ func (db *DB) GetChirps() ([]Chirp, error) {
 		return chirps, err
 	}
 
-	chirps = make([]Chirp, len(dbs.Chirps))
-	for i, _ := range dbs.Chirps {
-		chirps[i-1] = dbs.Chirps[i]
+	for i := 1; i < db.chirpID; i++ {
+		chirp, ok := dbs.Chirps[i]
+		if ok {
+			chirps = append(chirps, chirp)
+		}
 	}
 
 	return chirps, nil
@@ -175,7 +184,7 @@ func (db *DB) CreateUser(email, password string) (User, error) {
 		return User{}, err
 	}
 	result = dbUser{
-		User: User{ID: len(dbs.Users) + 1, Email: email},
+		User: User{ID: db.userID, Email: email},
 		PWH:  pwh,
 	}
 	_, exists := dbs.Emails[email]
@@ -184,6 +193,7 @@ func (db *DB) CreateUser(email, password string) (User, error) {
 	}
 	dbs.Emails[email] = result.ID
 	dbs.Users[result.ID] = result
+	db.userID++
 
 	err = db.writeDB(dbs)
 	if err != nil {
