@@ -71,6 +71,41 @@ func TestMain(m *testing.M) {
 	os.Exit(result)
 }
 
+func getChirps() ([]chirpStruct, error) {
+	var chirpList []chirpStruct
+
+	response, err := http.Get(apiAddr + "/chirps")
+	if err != nil {
+		return chirpList, err
+	}
+
+	responseBody, err := io.ReadAll(response.Body)
+	defer response.Body.Close()
+
+	if response.StatusCode != 200 {
+		println(response.StatusCode)
+		return chirpList, err
+	}
+
+	err = json.Unmarshal(responseBody, &chirpList)
+	if err != nil {
+		return chirpList, err
+	}
+
+	return chirpList, nil
+}
+
+func testRequest(t *testing.T, request *http.Request, codeExpected int, failureMSG string) *http.Response {
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	} else if response.StatusCode != codeExpected {
+		t.Fatal(failureMSG)
+	}
+
+	return response
+}
+
 func TestAppGet(t *testing.T) {
 	fbuf, err := os.ReadFile("serve/index.html")
 	if err != nil {
@@ -95,8 +130,8 @@ func TestPostUser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
 
+	defer response.Body.Close()
 	rBody, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -109,30 +144,25 @@ func TestPostUser(t *testing.T) {
 
 func TestPostLogin(t *testing.T) {
 	requestBody := []byte(fmt.Sprintf(`{"password":"%s", "email":"%s"}`, testPW1, testEmail1))
-	response, err := http.Post(apiAddr+"/login", "application/json", bytes.NewBuffer(requestBody))
+	request, err := http.NewRequest("POST", apiAddr+"/login", bytes.NewBuffer(requestBody))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	response := testRequest(t, request, 200, "Login POST request failed")
 
+	defer response.Body.Close()
 	rBody, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if response.StatusCode != 200 {
-		println(response.StatusCode)
-		t.Fatal("Request failed", string(rBody))
-	}
-
-	type loginAuth struct {
+	var auth struct {
 		ID           int    `json:"id"`
 		Email        string `json:"email"`
 		IsChirpyRed  bool   `json:"is_chirpy_red"`
 		Token        string `json:"token"`
 		RefreshToken string `json:"refresh_token"`
 	}
-	var auth loginAuth
 	err = json.Unmarshal(rBody, &auth)
 	if err != nil {
 		t.Fatal(err)
@@ -144,15 +174,16 @@ func TestPostLogin(t *testing.T) {
 
 func TestPutUser(t *testing.T) {
 	requestBody := []byte(fmt.Sprintf(`{"password":"%s", "email":"%s"}`, testPW1, testEmail2))
-	request, _ := http.NewRequest("PUT", apiAddr+"/users", bytes.NewBuffer(requestBody))
-	request.Header.Add("Authorization", "Bearer "+accessToken)
 
-	response, err := http.DefaultClient.Do(request)
+	request, err := http.NewRequest("PUT", apiAddr+"/users", bytes.NewBuffer(requestBody))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
 
+	request.Header.Add("Authorization", "Bearer "+accessToken)
+	response := testRequest(t, request, 200, "Failed to update user info")
+
+	defer response.Body.Close()
 	rBody, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -176,52 +207,21 @@ func TestPostChirp(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-
+		//testRequest(t, request, 401, "Successfully posted chirp without authorization header")
 		request.Header.Add("Authorization", "Bearer "+accessToken)
-		response, err := http.DefaultClient.Do(request)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer response.Body.Close()
+		response := testRequest(t, request, 201, "Failed to post chirp")
 
+		defer response.Body.Close()
 		rBody, err := io.ReadAll(response.Body)
 		if err != err {
 			t.Fatal(err)
 		}
+
 		expected := fmt.Sprintf(`{"id":%d,"author_id":1,%s}`, i+1, chirp[1:len(chirp)-1])
 		if strings.Compare(string(rBody), expected) != 0 {
 			t.Fatalf("\nExpected; %s\n Recieved: %s", expected, string(rBody))
 		}
-
-		if response.StatusCode != 201 {
-			println(response.StatusCode)
-			t.Fatal("Post Chirp failed")
-		}
 	}
-}
-
-func getChirps() ([]chirpStruct, error) {
-	var chirpList []chirpStruct
-
-	response, err := http.Get(apiAddr + "/chirps")
-	if err != nil {
-		return chirpList, err
-	}
-
-	responseBody, err := io.ReadAll(response.Body)
-	defer response.Body.Close()
-
-	if response.StatusCode != 200 {
-		println(response.StatusCode)
-		return chirpList, err
-	}
-
-	err = json.Unmarshal(responseBody, &chirpList)
-	if err != nil {
-		return chirpList, err
-	}
-
-	return chirpList, nil
 }
 func TestGetChirps(t *testing.T) {
 	chirpList, err := getChirps()
@@ -230,61 +230,74 @@ func TestGetChirps(t *testing.T) {
 	}
 
 	chirpID := chirpList[len(chirpList)-1].ID
-	response, err := http.Get(apiAddr + "/chirps/" + fmt.Sprint(chirpID))
+	request, err := http.NewRequest("GET", apiAddr+"/chirps/"+fmt.Sprint(chirpID), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	response := testRequest(t, request, 200, "Failed to get chirp #"+fmt.Sprint(chirpID))
 	responseBody, err := io.ReadAll(response.Body)
 	defer response.Body.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if response.StatusCode != 200 {
-		println(response.StatusCode)
-		t.Fatal(string(responseBody))
+	if strings.Compare(string(responseBody), `{"id":4,"author_id":1,"body":"This is fourth test chirp!"}`) != 0 {
+		t.Fatal("Unexpected GET chirp response body")
 	}
-
-	//println(string(responseBody))
 }
 
 func TestDeleteChirp(t *testing.T) {
-	chirpList, err := getChirps()
-	if err != nil {
-		t.Fatal(err)
-	}
-	//fmt.Println(chirpList)
-	chirpCount := len(chirpList)
-	deleteID := chirpCount / 2
-
+	deleteID := 3
 	request, err := http.NewRequest("DELETE", apiAddr+"/chirps/"+fmt.Sprint(deleteID), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	testRequest(t, request, 401, "Successfully deleted chirp without authorization")
+
 	request.Header.Add("Authorization", "Bearer "+accessToken)
+	testRequest(t, request, 200, "Failed to delete chirp with authorization")
 
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if response.StatusCode != 200 {
-		responseBody, err := io.ReadAll(response.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Fatal(string(responseBody))
-	}
-
-	chirpList, err = getChirps()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(chirpList) != chirpCount-1 {
-		fmt.Println(chirpList)
-		t.Fatalf("Before: %d, After: %d\n", chirpCount, len(chirpList))
-	}
+	request, _ = http.NewRequest("GET", apiAddr+"/chirps/"+fmt.Sprint(deleteID), nil)
+	testRequest(t, request, 404, "Successfully GOT deleted chirp")
 }
 
-// TO-DO: Tests for refresh, revoke
+func TestRefresh(t *testing.T) {
+	request, err := http.NewRequest("POST", apiAddr+"/refresh", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testRequest(t, request, 401, "Refreshed access token without authorization header")
+
+	request.Header.Add("Authorization", "Bearer "+refreshToken)
+	response := testRequest(t, request, 200, "Refresh failed with valid authorization")
+	responseBody, err := io.ReadAll(response.Body)
+	defer response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	} else if response.StatusCode != 200 {
+		t.Fatal(response.Status)
+	}
+
+	var refresh struct {
+		Token string `json:"token"`
+	}
+	err = json.Unmarshal(responseBody, &refresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessToken = refresh.Token
+}
+
+func TestRevoke(t *testing.T) {
+	request, err := http.NewRequest("POST", apiAddr+"/revoke", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testRequest(t, request, 401, "Revoke succeeded without authorization")
+
+	request.Header.Add("Authorization", "Bearer "+refreshToken)
+	testRequest(t, request, 200, "Revoke failed with authorization")
+
+	request, _ = http.NewRequest("POST", apiAddr+"/refresh", nil)
+	testRequest(t, request, 401, "Refresh token still valid after revoke")
+}

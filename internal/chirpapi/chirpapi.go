@@ -77,6 +77,7 @@ func (cfg *ApiConfig) checkAuthorization(tokenString, issuer string) (id int, er
 	}
 	if i == RefreshIssuer && cfg.db.IsTokenRevoked(tokenString) {
 		err = errors.New("Refresh token has been revoked")
+		return
 	}
 
 	expires, err := token.Claims.GetExpirationTime()
@@ -184,20 +185,21 @@ func (cfg *ApiConfig) PostChirpsHandler(w http.ResponseWriter, r *http.Request) 
 }
 
 func (cfg *ApiConfig) GetChirpsHandler(w http.ResponseWriter, r *http.Request) {
-	chirps, err := cfg.db.GetChirps()
-	if err != nil {
-		respondWithError(w, 500, "Failed to load chirp database")
-		return
-	}
-
 	idStr := chi.URLParam(r, "chirpID")
 	if len(idStr) > 0 {
 		id, _ := strconv.Atoi(idStr)
-		if id > len(chirps) {
-			respondWithError(w, 404, fmt.Sprintf("Chirp %d not found", id))
+		chirp, err := cfg.db.GetChirp(id)
+		if err != nil {
+			respondWithError(w, 404, fmt.Sprintf("Chirp #%d not found", id))
 			return
 		}
-		respondWithJSON(w, 200, chirps[id-1])
+		respondWithJSON(w, 200, chirp)
+		return
+	}
+
+	chirps, err := cfg.db.GetChirps()
+	if err != nil {
+		respondWithError(w, 500, "Failed to load chirp database")
 		return
 	}
 
@@ -312,10 +314,15 @@ func (cfg *ApiConfig) PutUsersHandler(w http.ResponseWriter, r *http.Request) {
 		Email    string `json:"email"`
 	}
 
-	ts := r.Header.Get("Authorization")[len("Bearer "):]
-	id, err := cfg.checkAuthorization(ts, AccessIssuer)
+	ts := r.Header.Get("Authorization")
+	if len(ts) < len("Bearer ") {
+		respondWithError(w, 401, "Invalid authorization header")
+		return
+	}
+	id, err := cfg.checkAuthorization(ts[len("Bearer "):], AccessIssuer)
 	if err != nil {
 		respondWithError(w, 401, err.Error())
+		return
 	}
 
 	params := new(parameters)
@@ -399,8 +406,7 @@ func (cfg *ApiConfig) PostRefreshHandler(w http.ResponseWriter, r *http.Request)
 	var err error
 	defer func() {
 		if err != nil {
-			respondWithError(w, 401, "Invalid authorization token")
-			return
+			respondWithError(w, 401, "Invalid authorization")
 		}
 	}()
 
@@ -409,7 +415,7 @@ func (cfg *ApiConfig) PostRefreshHandler(w http.ResponseWriter, r *http.Request)
 		err = errors.New("Invalid authorization header")
 		return
 	}
-	id, err := cfg.checkAuthorization(ts[len("Bearer "):], AccessIssuer)
+	id, err := cfg.checkAuthorization(ts[len("Bearer "):], RefreshIssuer)
 	if err != nil {
 		return
 	}
@@ -421,7 +427,7 @@ func (cfg *ApiConfig) PostRefreshHandler(w http.ResponseWriter, r *http.Request)
 			Issuer:    AccessIssuer,
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(60 * 24 * time.Hour)),
-			Subject:   fmt.Sprintf("%d", id),
+			Subject:   fmt.Sprint(id),
 		},
 	)
 
@@ -449,12 +455,13 @@ func (cfg *ApiConfig) PostRevokeHandler(w http.ResponseWriter, r *http.Request) 
 		err = errors.New("Invalid authorization header")
 		return
 	}
-	_, err = cfg.checkAuthorization(ts[len("Bearer "):], RefreshIssuer)
+	ts = ts[len("Bearer "):]
+	_, err = cfg.checkAuthorization(ts, RefreshIssuer)
 	if err != nil {
 		return
 	}
 
-	cfg.db.RevokeToken(ts)
+	err = cfg.db.RevokeToken(ts)
 }
 
 func (cfg *ApiConfig) PolkaWebhookHandler(w http.ResponseWriter, r *http.Request) {
